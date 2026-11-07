@@ -6,6 +6,7 @@ import "@fontsource-variable/jetbrains-mono";
 import "./styles/global.css";
 import "./styles/panel.css";
 import "./styles/start.css";
+import "./styles/hud.css";
 import { App } from "./App";
 
 createRoot(document.getElementById("root")!).render(

@@ -1,8 +1,10 @@
-// End-to-end visual QA. Drives the running app (npm run dev) in Chromium.
+// End-to-end visual QA of the CLASSIC portal (Tune → Classic). The hand-frame toy, which
+// is the default experience, is covered by scripts/qa-toy.mjs.
+// Drives the running app (npm run dev) in Chromium.
 //
 //   node scripts/qa.mjs                       start screen + simulated demo
-//   node scripts/qa.mjs --video hands.y4m     + real MediaPipe tracking on a fake webcam clip
-//   node scripts/qa.mjs --video hands.y4m --decart   + a short, real Decart session (billed!)
+//   node scripts/qa.mjs --video hands.mjpeg   + real MediaPipe tracking on a fake webcam clip
+//   node scripts/qa.mjs --video hands.mjpeg --decart   + a short, real Decart session (billed!)
 //
 // Screenshots and results.json go to qa-output/.
 import { chromium } from "playwright";
@@ -45,11 +47,12 @@ async function launch(extra = []) {
   }
 }
 
-async function settings(page, patch) {
+/** Seeds the stored settings before the app loads; every run here uses the classic frame style. */
+async function settings(page, patch = {}) {
   await page.addInitScript((p) => {
-    const key = "domain-portal:settings:v1";
+    const key = "domain-portal:settings:v2";
     const cur = JSON.parse(localStorage.getItem(key) || "{}");
-    localStorage.setItem(key, JSON.stringify({ ...cur, ...p }));
+    localStorage.setItem(key, JSON.stringify({ schema: 2, ...cur, frameStyle: "classic", ...p }));
   }, patch);
 }
 
@@ -80,6 +83,7 @@ if (!ONLY_CAMERA) {
     const page = await browser.newPage({ viewport, deviceScaleFactor: name.includes("mobile") ? 2 : 1 });
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
+    await settings(page);
     await page.goto(URL);
     await page.waitForSelector(".start__title");
     await page.evaluate(() => document.fonts.ready);
@@ -190,7 +194,7 @@ if (VIDEO) {
   console.log(`NOTE  tracking rate ${st.trackFps} Hz vs the 30 Hz goal — bound by inference time on this machine`);
 
   // Local preview: must be labelled as not AI output (burnt into the texture).
-  await page.keyboard.press("t");
+  await page.keyboard.press("p");
   await page.getByRole("radio", { name: "Local preview" }).click();
   await page.keyboard.press("Escape");
   await sleep(1500);
@@ -198,7 +202,7 @@ if (VIDEO) {
   check("camera: local preview selected", (await status(page)).content === "local");
 
   if (DECART) {
-    await page.keyboard.press("a");
+    await page.keyboard.press("d");
     const live = await waitFor(page, (s) => s.ai.state === "live" || s.ai.state === "error" || s.ai.state === "unconfigured", 60000, "decart live");
     const s1 = live?.s;
     check("decart: session goes live", s1?.ai.state === "live", s1 ? `${s1.ai.state} ${s1.ai.detail} (${live.ms} ms)` : "timeout");
@@ -221,7 +225,7 @@ if (VIDEO) {
       };
       check("decart: transformed frames arrive and render in the portal", !!frames && s2.content === "decart", `${s2.ai.fps} fps`);
     }
-    await page.keyboard.press("a");
+    await page.keyboard.press("d");
     await sleep(1500);
     const off = await status(page);
     check("decart: switching AI off ends the session", off.ai.state === "off", off.ai.state);

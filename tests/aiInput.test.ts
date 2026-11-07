@@ -30,8 +30,14 @@ describe("coverCrop", () => {
 });
 
 describe("aspectsMatch", () => {
-  it("treats 1280x720 and the restyle model's 1280x704 as the same shape", () => {
-    expect(aspectsMatch(1280 / 720, 1280 / 704)).toBe(true);
+  it("treats a camera that already has the model's shape as a match", () => {
+    expect(aspectsMatch(1280 / 704, 1280 / 704)).toBe(true);
+    expect(aspectsMatch(1920 / 1080, 1280 / 720)).toBe(true);
+  });
+
+  it("does not treat 1280x720 as the restyle model's 1280x704: that case is cropped exactly", () => {
+    expect(aspectsMatch(1280 / 720, 1280 / 704)).toBe(false);
+    expect(coverCrop(1280, 720, 1280 / 704)).toEqual({ x: 0, y: 8, w: 1280, h: 704 });
   });
 
   it("does not treat 4:3 as 16:9", () => {

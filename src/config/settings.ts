@@ -6,8 +6,14 @@ import { DEFAULT_ONE_HAND_MAPPING, DEFAULT_TWO_HAND_MAPPING, type CornerMapping 
 import type { InvalidPolicy } from "../portal/PortalController";
 import type { ContentFit, ContentMapping, ContentSource } from "../render/Renderer";
 import type { TrackingMode } from "../tracking/handAssignment";
+import { migrateSettings } from "./migrate";
+import { TOY_DEFAULTS, type ToySettings } from "./toySettings";
 
-export interface Settings {
+/**
+ * Classic portal and tracking settings, plus the hand-frame toy's own fields
+ * (ToySettings). The toy never reuses the classic `source`, `model` or `prompt`.
+ */
+export interface Settings extends ToySettings {
   // Tracking
   mode: TrackingMode;
   twoHandMapping: CornerMapping;
@@ -48,13 +54,14 @@ export interface Settings {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
+  ...TOY_DEFAULTS,
   mode: "two-hand",
   twoHandMapping: DEFAULT_TWO_HAND_MAPPING,
   oneHandMapping: DEFAULT_ONE_HAND_MAPPING,
   smoothing: 1.2,
   responsiveness: 6,
   graceMs: 450,
-  detectionConfidence: 0.6,
+  detectionConfidence: 0.5,
   mirror: true,
   invalidPolicy: "hold",
   portalScale: 1,
@@ -78,23 +85,19 @@ export const DEFAULT_SETTINGS: Settings = {
   enhance: true,
   fast: false,
   autoFallback: true,
-  idlePauseSec: 45,
+  idlePauseSec: 30,
   calibration: null,
 };
 
-const KEY = "domain-portal:settings:v1";
+const KEY = "domain-portal:settings:v2";
+/** The previous build's entry. It is read once to carry settings over and never written, so that build still loads. */
+const KEY_V1 = "domain-portal:settings:v1";
 
 function load(): Settings {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = localStorage.getItem(KEY) ?? localStorage.getItem(KEY_V1);
     if (!raw) return DEFAULT_SETTINGS;
-    const saved = JSON.parse(raw) as Partial<Settings>;
-    if (saved.prompt && RETIRED_PROMPTS.includes(saved.prompt)) delete saved.prompt;
-    return {
-      ...DEFAULT_SETTINGS,
-      ...saved,
-      gestures: { ...DEFAULT_SETTINGS.gestures, ...(saved.gestures ?? {}) },
-    };
+    return migrateSettings(JSON.parse(raw), DEFAULT_SETTINGS, RETIRED_PROMPTS);
   } catch {
     return DEFAULT_SETTINGS;
   }

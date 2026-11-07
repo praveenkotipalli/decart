@@ -40,8 +40,13 @@ export function coverCrop(w: number, h: number, aspect: number): Rect {
   return { x: Math.floor((w - cw) / 2), y: Math.floor((h - ch) / 2), w: cw, h: ch };
 }
 
-/** True when two aspect ratios are close enough that no crop is worth the per-frame cost. */
-export function aspectsMatch(a: number, b: number, tolerance = 0.03): boolean {
+/**
+ * True when two aspect ratios are the same shape. The tolerance is tight on purpose: a
+ * 1280x720 camera and a 1280x704 model differ by 2.3%, and how the service would fit one
+ * into the other is not documented, so that case is cropped here (8 rows top and bottom)
+ * and the picture that comes back lines up exactly.
+ */
+export function aspectsMatch(a: number, b: number, tolerance = 0.004): boolean {
   return Math.abs(a / b - 1) <= tolerance;
 }
 

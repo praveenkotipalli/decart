@@ -1,4 +1,5 @@
-// Screenshots of the UI chrome (Tune panel tabs, mobile layout) in the simulated demo.
+// Screenshots of the CLASSIC portal's chrome (Tune panel tabs, mobile layout) in the
+// simulated demo. The hand-frame toy's chrome is covered by scripts/qa-toy.mjs.
 //   node scripts/qa-ui.mjs [--url http://localhost:5199/]
 import { chromium } from "playwright";
 import { mkdir } from "node:fs/promises";
@@ -21,9 +22,12 @@ async function launch() {
 
 const browser = await launch();
 const errors = [];
+const classic = (page) =>
+  page.addInitScript(() => localStorage.setItem("domain-portal:settings:v2", JSON.stringify({ schema: 2, frameStyle: "classic" })));
 
 const desk = await browser.newPage({ viewport: { width: 1440, height: 900 } });
 desk.on("pageerror", (e) => errors.push(e.message));
+await classic(desk);
 await desk.goto(URL);
 await desk.getByRole("button", { name: /simulated demo/i }).click();
 await sleep(2500);
@@ -36,6 +40,7 @@ for (const tab of ["Transform", "Portal", "Tracking", "Gestures", "Keys"]) {
 
 const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, hasTouch: true });
 phone.on("pageerror", (e) => errors.push(e.message));
+await classic(phone);
 await phone.goto(URL);
 await phone.getByRole("button", { name: /simulated demo/i }).click();
 await sleep(3500);

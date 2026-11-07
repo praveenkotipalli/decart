@@ -88,6 +88,12 @@ button {
   background: var(--bg);
 }
 
+/* Holds the stage. Full-bleed here; the hand-frame layout (hud.css) letterboxes it between two bands. */
+.stage-wrap {
+  position: absolute;
+  inset: 0;
+}
+
 .stage {
   position: absolute;
   inset: 0;

@@ -7,5 +7,6 @@ if (import.meta.env.DEV || new URLSearchParams(location.search).has("qa")) {
   (window as unknown as { __domain: unknown }).__domain = {
     state: () => engine.debugState(),
     status: () => engine.status.get(),
+    probe: (points: { x: number; y: number }[]) => engine.probe(points),
   };
 }

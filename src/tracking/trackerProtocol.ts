@@ -1,3 +1,4 @@
+import type { RawFace } from "../toy/types";
 import type { HandFrame, HandObservation } from "./landmarks";
 
 /** Keep in step with the installed @mediapipe/tasks-vision version (CDN fallback only). */
@@ -7,6 +8,10 @@ export const LOCAL_MODEL = "/mediapipe/hand_landmarker.task";
 export const CDN_WASM = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/wasm`;
 export const CDN_MODEL =
   "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task";
+/** BlazeFace short range: the optional face box. */
+export const LOCAL_FACE_MODEL = "/mediapipe/blaze_face_short_range.tflite";
+export const CDN_FACE_MODEL =
+  "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/latest/blaze_face_short_range.tflite";
 
 export interface TrackerOptions {
   minDetection: number;
@@ -28,12 +33,18 @@ export type DelegatePreference = "auto" | "GPU" | "CPU";
 export type WorkerRequest =
   | { type: "init"; wasm: string; model: string; useModule: boolean; options: TrackerOptions; delegate: DelegatePreference }
   | { type: "detect"; frame: VideoFrame | ImageBitmap; ts: number }
-  | { type: "options"; options: TrackerOptions };
+  | { type: "options"; options: TrackerOptions }
+  // The face detector is a second, optional task: created on request, closed again under load.
+  | { type: "face-init"; model: string; intervalMs: number }
+  | { type: "face-config"; intervalMs: number }
+  | { type: "face-close" };
 
 export type WorkerResponse =
   | { type: "ready"; delegate: "GPU" | "CPU" }
   | { type: "error"; message: string }
-  | { type: "result"; ts: number; inferenceMs: number; hands: RawHands };
+  | { type: "result"; ts: number; inferenceMs: number; hands: RawHands }
+  | { type: "face-status"; state: "ready" | "failed" | "closed"; message?: string }
+  | { type: "face"; ts: number; faces: RawFace[]; ms: number };
 
 /**
  * Converts a detection into stage space. MediaPipe labels handedness as if the

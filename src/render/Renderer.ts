@@ -1,10 +1,13 @@
 import { homogeneousW, invert3, squareToQuad, toGLMatrix } from "../geometry/homography";
 import { boundingBox, centroid, estimateAspect, expandQuad, signedArea } from "../geometry/quad";
 import type { Quad, Vec2 } from "../geometry/vec";
+import type { Rect, ToyScene } from "../toy/types";
 import { drawPreviewLabel, drawTestCard } from "./canvasTextures";
 import { createProgram, createRenderTarget, createTexture, VideoTexture, type Program, type RenderTarget } from "./gl";
 import { Particles } from "./particles";
 import { BACKGROUND_FS, FULLSCREEN_VS, PARTICLE_FS, PARTICLE_VS, PORTAL_FS, STYLIZE_FS, TESTCARD_FS } from "./shaders";
+import { drawSimScene } from "./simScene";
+import { ToyRenderer } from "./ToyRenderer";
 
 export type ContentSource = "decart" | "local" | "test";
 export type ContentFit = "cover" | "stretch";
@@ -28,6 +31,15 @@ export interface RenderFrame {
   glow: number;
   energy: number;
   particles: boolean;
+  /**
+   * The hand-frame toy. When set, the toy's passes are drawn instead of the classic
+   * portal and the portal fields above are ignored.
+   */
+  toy?: ToyScene | null;
+  /** Toy only: anime is switched on, so keep uploading AI frames (even while no frame is open). */
+  anime?: boolean;
+  /** Toy only, debug: draw the AI frame at 50% over the stage to check registration. */
+  onion?: boolean;
 }
 
 /** Cover-fit rectangle of the camera frame on the canvas, device px. */
@@ -74,7 +86,15 @@ export class Renderer {
   private camVideo: HTMLVideoElement | null = null;
   private aiVideo: HTMLVideoElement | null = null;
   private pendingCapture: ((b: Blob | null) => void)[] = [];
+  private pendingProbe: { points: Vec2[]; resolve: (px: number[][]) => void }[] = [];
   private lost = false;
+  private toy!: ToyRenderer;
+  private classicReady = false;
+  private simTex: WebGLTexture | null = null;
+  /** The simulated scene is static: its blur chain needs one pass after the texture is made, not one per frame. */
+  private simFresh = false;
+  private aiRect: Rect = { x: 0, y: 0, w: 1, h: 1 };
+  private maxDpr = 2;
   dpr = 1;
   stage: StageRect = { x: 0, y: 0, w: 1, h: 1 };
 
@@ -108,6 +128,21 @@ export class Renderer {
     this.bg = createProgram(gl, FULLSCREEN_VS, BACKGROUND_FS, [
       "uRes", "uStage", "uCam", "uAlt", "uHasCam", "uMirror", "uAlt01", "uTime",
     ]);
+    this.camTex = new VideoTexture(gl);
+    this.aiTex = new VideoTexture(gl);
+    this.toy = new ToyRenderer(gl, this.vao);
+    // Everything below belongs to the context that was just (re)created.
+    this.classicReady = false;
+    this.simTex = null;
+  }
+
+  /**
+   * Programs, targets and textures of the classic portal. Created on its first frame,
+   * so the hand-frame toy neither compiles the portal shader nor holds its targets.
+   */
+  private ensureClassic() {
+    if (this.classicReady) return;
+    const gl = this.gl;
     this.portal = createProgram(gl, FULLSCREEN_VS, PORTAL_FS, [
       "uRes", "uContent", "uHinv", "uSign", "uQ", "uCenter", "uSize", "uCrop", "uStage", "uWindow",
       "uContentMirror", "uTime", "uReveal", "uGlow", "uEnergy", "uLocked", "uWarn", "uReady", "uDpr",
@@ -118,14 +153,13 @@ export class Renderer {
       "uCam", "uLabel", "uTexel", "uLabelRect", "uMirror", "uTime", "uHasCam", "uBlue", "uViolet",
     ]);
     this.testcard = createProgram(gl, FULLSCREEN_VS, TESTCARD_FS, ["uCard", "uTime", "uBlue"]);
-
-    this.camTex = new VideoTexture(gl);
-    this.aiTex = new VideoTexture(gl);
     this.labelTex = this.uploadCanvas(drawPreviewLabel());
     this.cardTex = this.uploadCanvas(drawTestCard());
     this.localRT = createRenderTarget(gl, LOCAL_W, LOCAL_H);
     this.testRT = createRenderTarget(gl, 1280, 720);
     this.particles = new Particles(gl);
+    gl.bindVertexArray(this.vao);
+    this.classicReady = true;
   }
 
   private uploadCanvas(c: HTMLCanvasElement): WebGLTexture {
@@ -158,8 +192,31 @@ export class Renderer {
     return { ready: this.aiTex.ready, frames: this.aiTex.frames, lastFrameAt: this.aiTex.lastFrameAt };
   }
 
+  /** Size of the camera frame in pixels (1280×720 while there is no camera). */
+  get cameraSize(): { w: number; h: number } {
+    return this.camVideo?.videoWidth ? this.camTex.size : { w: 1280, h: 720 };
+  }
+
+  /**
+   * The part of the stage the AI frame covers, in stage uv and display orientation.
+   * The whole stage unless the camera had to be cropped to the model's shape.
+   */
+  setAiRect(rect: Rect) {
+    this.aiRect = { ...rect };
+  }
+
+  /** Lower the resolution ceiling (the frame-rate governor uses 1 on slow machines). Applies from the next resize. */
+  setMaxDpr(max: number) {
+    this.maxDpr = Math.max(1, max);
+  }
+
+  /** Resolves with the RGBA of the next rendered frame at the given stage positions (QA only). */
+  probe(points: Vec2[]): Promise<number[][]> {
+    return new Promise((resolve) => this.pendingProbe.push({ points, resolve }));
+  }
+
   resize(cssW: number, cssH: number, dpr: number) {
-    this.dpr = Math.min(dpr, 2);
+    this.dpr = Math.min(dpr, this.maxDpr);
     const w = Math.max(1, Math.round(cssW * this.dpr));
     const h = Math.max(1, Math.round(cssH * this.dpr));
     if (this.canvas.width !== w || this.canvas.height !== h) {
@@ -197,13 +254,20 @@ export class Renderer {
     const dt = this.lastTime ? f.time - this.lastTime : 1 / 60;
     this.lastTime = f.time;
 
-    this.camTex.update();
+    const newCamFrame = this.camTex.update();
     const hasCam = this.camTex.ready ? 1 : 0;
     this.stage = this.computeStage();
     const st = this.stage;
     gl.bindVertexArray(this.vao);
     gl.disable(gl.BLEND);
     gl.disable(gl.SCISSOR_TEST);
+
+    if (f.toy) {
+      this.renderToy(f, f.toy, hasCam === 1, newCamFrame);
+      this.finishFrame();
+      return;
+    }
+    this.ensureClassic();
 
     // ── Content for the portal ───────────────────────────────────────────────
     let content: WebGLTexture;
@@ -266,6 +330,79 @@ export class Renderer {
       gl.disable(gl.BLEND);
     } else this.particles.clear();
 
+    this.finishFrame();
+  }
+
+  /**
+   * The hand-frame toy: the plain camera as background, then the toy's own passes.
+   * Without a camera (simulated hands) a drawn, labelled stand-in picture takes its place.
+   */
+  private renderToy(f: RenderFrame, scene: ToyScene, hasCam: boolean, newCamFrame: boolean) {
+    const gl = this.gl;
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    const st = this.stage;
+    // Uploaded on every decoded frame while anime is on: freshness is judged from the
+    // last upload, and a frame that opens must never start from a stale picture.
+    if (f.anime) this.aiTex.update();
+    if (!hasCam && !this.simTex) {
+      this.simTex = this.uploadCanvas(drawSimScene());
+      this.simFresh = true;
+    }
+    const camera = hasCam ? this.camTex.tex : this.simTex!;
+    const mirror = hasCam && f.mirror;
+    const env = {
+      width: W,
+      height: H,
+      dpr: this.dpr,
+      stage: st,
+      camera,
+      cameraMirror: mirror,
+      cameraSize: hasCam ? this.camTex.size : { w: 1280, h: 720 },
+      newCameraFrame: hasCam ? newCamFrame : this.simFresh,
+      ai: this.aiTex.tex,
+      aiRect: this.aiRect,
+      onion: Boolean(f.onion && f.anime && this.aiTex.ready),
+    };
+
+    this.toy.prepare(scene, env);
+    if (!hasCam) this.simFresh = false;
+    if (this.toy.needsBackground(scene)) {
+      gl.useProgram(this.bg.program);
+      gl.uniform2f(this.bg.u.uRes, W, H);
+      gl.uniform4f(this.bg.u.uStage, st.x, st.y, st.w, st.h);
+      gl.uniform1f(this.bg.u.uHasCam, 1);
+      gl.uniform1f(this.bg.u.uMirror, mirror ? 1 : 0);
+      gl.uniform1f(this.bg.u.uAlt01, 0);
+      gl.uniform1f(this.bg.u.uTime, f.time);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, camera);
+      gl.uniform1i(this.bg.u.uCam, 0);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, camera);
+      gl.uniform1i(this.bg.u.uAlt, 1);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+    this.toy.draw(scene, env);
+  }
+
+  /** Snapshot and pixel-probe requests are served in the same task as the draw, before the buffer is presented. */
+  private finishFrame() {
+    if (this.pendingProbe.length) {
+      const gl = this.gl;
+      const H = this.canvas.height;
+      const buf = new Uint8Array(4);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      for (const req of this.pendingProbe.splice(0)) {
+        req.resolve(
+          req.points.map((p) => {
+            const px = this.stageToPx(p);
+            gl.readPixels(Math.round(px.x), Math.round(H - 1 - px.y), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+            return [buf[0], buf[1], buf[2], buf[3]];
+          }),
+        );
+      }
+    }
     if (this.pendingCapture.length) {
       const waiting = this.pendingCapture.splice(0);
       // toBlob snapshots the drawing buffer synchronously, before it is presented.
@@ -401,6 +538,7 @@ export class Renderer {
   dispose() {
     this.camTex.dispose();
     this.aiTex.dispose();
-    this.particles.dispose();
+    this.toy.dispose();
+    if (this.classicReady) this.particles.dispose();
   }
 }

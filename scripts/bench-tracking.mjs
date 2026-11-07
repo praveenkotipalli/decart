@@ -1,5 +1,5 @@
 // Compares hand-tracking configurations on a fake webcam clip.
-//   node scripts/bench-tracking.mjs --video hands.y4m [--url http://localhost:5199/]
+//   node scripts/bench-tracking.mjs --video hands.mjpeg [--url http://localhost:5199/]
 // Prints steady-state render fps, tracking fps and inference time for each mode.
 import { chromium } from "playwright";
 import { resolve } from "node:path";
@@ -37,7 +37,7 @@ for (const [tracker, delegate] of modes) {
   const browser = await launch();
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   await page.addInitScript(() =>
-    localStorage.setItem("domain-portal:settings:v1", JSON.stringify({ source: "test", particles: true })),
+    localStorage.setItem("domain-portal:settings:v2", JSON.stringify({ schema: 2, faceBox: "off" })),
   );
   await page.goto(`${BASE}?qa&tracker=${tracker}&delegate=${delegate}`);
   await page.getByRole("button", { name: /open the portal/i }).click();

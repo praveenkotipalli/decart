@@ -1,8 +1,11 @@
 import type { HandLandmarker } from "@mediapipe/tasks-vision";
+import type { RawFace } from "../toy/types";
 import type { HandFrame } from "./landmarks";
 import {
+  CDN_FACE_MODEL,
   CDN_MODEL,
   CDN_WASM,
+  LOCAL_FACE_MODEL,
   LOCAL_MODEL,
   LOCAL_WASM,
   served,
@@ -30,6 +33,12 @@ export class HandTracker {
   thread: "worker" | "main" = "worker";
   onResult: (frame: HandFrame) => void = () => {};
   onError: (message: string) => void = () => {};
+  /** Faces of one camera frame, normalised to the unmirrored frame, with that frame's mirror flag. */
+  onFaces: (faces: RawFace[], mirror: boolean, time: number) => void = () => {};
+  /** The face detector started (true) or stopped / failed (false). */
+  onFaceStatus: (running: boolean) => void = () => {};
+  /** What was last asked for; the detector itself reports through onFaceStatus. */
+  faceEnabled = false;
 
   private worker: Worker | null = null;
   private landmarker: HandLandmarker | null = null;
@@ -39,6 +48,9 @@ export class HandTracker {
   private lastSubmit: { video: HTMLVideoElement; mirror: boolean } | null = null;
   private skipped: number | null = null;
   private isReady = false;
+  private faceFailed = false;
+  private faceIntervalMs = 400;
+  private faceModel: Promise<string> | null = null;
 
   get ready() {
     return this.isReady;
@@ -94,7 +106,53 @@ export class HandTracker {
     });
   }
 
+  /** The face box needs the worker (it is not offered on the main-thread fallback) and must not have failed before. */
+  get faceSupported(): boolean {
+    return this.isReady && this.worker !== null && !this.faceFailed;
+  }
+
+  /** Start or stop the optional face detector. Starting loads a second small model in the worker. */
+  enableFace(on: boolean, intervalMs = this.faceIntervalMs) {
+    const worker = this.worker;
+    if (!worker || (on && !this.faceSupported)) {
+      this.faceEnabled = false;
+      return;
+    }
+    if (on === this.faceEnabled) return;
+    this.faceEnabled = on;
+    this.faceIntervalMs = intervalMs;
+    if (!on) {
+      worker.postMessage({ type: "face-close" } satisfies WorkerRequest);
+      return;
+    }
+    this.faceModel ??= served(LOCAL_FACE_MODEL).then((local) => new URL(local ? LOCAL_FACE_MODEL : CDN_FACE_MODEL, location.href).href);
+    void this.faceModel.then((model) => {
+      if (this.faceEnabled && this.worker === worker) {
+        worker.postMessage({ type: "face-init", model, intervalMs: this.faceIntervalMs } satisfies WorkerRequest);
+      }
+    });
+  }
+
+  setFaceInterval(intervalMs: number) {
+    if (!this.faceEnabled || !this.worker || Math.abs(intervalMs - this.faceIntervalMs) < 50) return;
+    this.faceIntervalMs = intervalMs;
+    this.worker.postMessage({ type: "face-config", intervalMs } satisfies WorkerRequest);
+  }
+
   private onWorkerMessage(m: WorkerResponse) {
+    if (m.type === "face") {
+      if (this.faceEnabled) this.onFaces(m.faces, this.lastSubmit?.mirror ?? true, performance.now());
+      return;
+    }
+    if (m.type === "face-status") {
+      if (m.state === "failed") {
+        this.faceFailed = true;
+        this.faceEnabled = false;
+        console.warn("[tracker] face detection unavailable:", m.message);
+      }
+      this.onFaceStatus(m.state === "ready" && this.faceEnabled);
+      return;
+    }
     if (m.type === "result") {
       const p = this.pending;
       this.busy = false;
@@ -148,8 +206,9 @@ export class HandTracker {
       this.busy = true;
       this.pending = { time: now, aspect, mirror };
       const worker = this.worker;
-      // VideoFrame is a GPU-backed handle (no copy); ImageBitmap is the fallback.
-      if (typeof VideoFrame !== "undefined") {
+      // VideoFrame is a GPU-backed handle (no copy); ImageBitmap is the fallback. A CPU-delegate
+      // task reads its whole input back from the GPU, so it gets the small bitmap instead.
+      if (typeof VideoFrame !== "undefined" && this.delegate !== "CPU") {
         try {
           const frame = new VideoFrame(video, { timestamp: ts * 1000 });
           worker.postMessage({ type: "detect", frame, ts } satisfies WorkerRequest, [frame]);
@@ -197,5 +256,7 @@ export class HandTracker {
     this.landmarker = null;
     this.isReady = false;
     this.busy = false;
+    this.faceEnabled = false;
+    this.faceFailed = false;
   }
 }

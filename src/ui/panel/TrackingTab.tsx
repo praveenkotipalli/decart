@@ -8,6 +8,8 @@ import { Section, Segmented, Select, Slider, Switch } from "../controls";
 
 export function TrackingTab({ status }: { status: EngineStatus }) {
   const s = useSettings();
+  // The hand frame always uses both hands and fixed corners: only the filtering applies to it.
+  const toy = s.frameStyle === "window";
   const twoHand = s.mode === "two-hand";
   const mapping = twoHand ? s.twoHandMapping : s.oneHandMapping;
   const key = twoHand ? "twoHandMapping" : "oneHandMapping";
@@ -19,6 +21,7 @@ export function TrackingTab({ status }: { status: EngineStatus }) {
 
   return (
     <>
+      {!toy && (
       <Section label="Mode">
         <Segmented<TrackingMode>
           label="Hands"
@@ -35,7 +38,9 @@ export function TrackingTab({ status }: { status: EngineStatus }) {
             : "One spread hand, palm to the camera: index, pinky, wrist and thumb. The mapping mirrors itself automatically if you show the back of your hand."}
         </p>
       </Section>
+      )}
 
+      {!toy && (
       <Section label="Corner mapping">
         <table className="mapping">
           <thead>
@@ -81,6 +86,7 @@ export function TrackingTab({ status }: { status: EngineStatus }) {
           Restore default mapping
         </button>
       </Section>
+      )}
 
       <Section label="Filtering">
         <Slider
@@ -124,6 +130,25 @@ export function TrackingTab({ status }: { status: EngineStatus }) {
         <Switch label="Mirror view" help="Show the camera like a mirror." checked={s.mirror} onChange={(mirror) => updateSettings({ mirror })} />
       </Section>
 
+      {toy && (
+        <Section label="Status">
+          <p className="note" style={{ marginTop: 0 }}>
+            {status.trackerDetail || "Hand tracking starts with the camera."}
+            {status.tracker === "ready" && status.camera === "on" && (
+              <>
+                {" "}
+                · {status.trackFps} results a second · {status.inferenceMs.toFixed(0)} ms each
+              </>
+            )}
+          </p>
+          <p className="note">
+            The frame is bound to four fingertips: index tips on top, thumb tips below, left hand to the left of the
+            screen. The face box {status.faceTracking ? "is running" : "is off"} (Look → Face box).
+          </p>
+        </Section>
+      )}
+
+      {!toy && (
       <Section label="Calibration">
         <p className="note" style={{ marginTop: 0 }}>
           {s.calibration
@@ -156,6 +181,7 @@ export function TrackingTab({ status }: { status: EngineStatus }) {
           )}
         </div>
       </Section>
+      )}
     </>
   );
 }
